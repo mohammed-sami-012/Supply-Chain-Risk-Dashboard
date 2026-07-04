@@ -2,3 +2,11 @@
 .venv/
 __pycache__/
 *.pyc
+.idea/
+~$*
+agent_graph.py
+agent_with_mcp.py
+basic_chatbot.py
+mcp_server.py
+rag_chatbot.py
+test_connection.py

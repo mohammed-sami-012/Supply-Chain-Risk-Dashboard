@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import asyncio
 import os
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
@@ -11,7 +10,6 @@ from langchain_community.document_loaders import Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -79,6 +77,8 @@ class AgentState(TypedDict):
     answer: str
 
 
+from langchain_core.tools import tool
+
 @st.cache_resource
 def build_agent():
     loader = Docx2txtLoader("Research_Paper.docx")
@@ -86,6 +86,7 @@ def build_agent():
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vector_store = FAISS.from_documents(chunks, embeddings)
     llm = ChatGroq(model="llama-3.3-70b-versatile", groq_api_key=os.getenv("GROQ_API_KEY"))
+    orders_df = pd.read_csv("all_order_risk_results.csv")
 
     def router_node(state: AgentState) -> AgentState:
         prompt = f"""Classify into one word: "document" or "data".
@@ -106,42 +107,45 @@ Answer with just one word."""
         state["answer"] = llm.invoke(prompt).content
         return state
 
-    import sys
+    # Same logic as mcp_server.py's tools, called in-process instead of via subprocess
+    @tool
+    def get_order_risk(order_id: int) -> str:
+        """Get the late delivery risk details for a specific Order ID."""
+        match = orders_df[orders_df["Order ID"] == order_id]
+        if match.empty:
+            return f"No order found with ID {order_id}."
+        order = match.iloc[0]
+        return (f"Order {order_id}: {order['Late Delivery Probability']:.1%} late delivery probability, "
+                f"Risk Category: {order['Risk Category']}, Key Drivers: {order['Key Risk Drivers']}")
 
-    async def setup():
-        client = MultiServerMCPClient({
-            "supply_chain": {"command": sys.executable, "args": ["mcp_server.py"], "transport": "stdio"}
-        })
-        tools = await client.get_tools()
-        llm_with_tools = llm.bind_tools(tools)
-        tool_map = {t.name: t for t in tools}
+    @tool
+    def get_high_risk_count() -> str:
+        """Get the current count of orders flagged as High Risk."""
+        count = (orders_df["Risk Category"] == "High Risk").sum()
+        return f"There are currently {count} orders flagged High Risk."
 
-        async def data_node(state: AgentState) -> AgentState:
-            response = llm_with_tools.invoke(state["question"])
-            if response.tool_calls:
-                call = response.tool_calls[0]
-                result = await tool_map[call["name"]].ainvoke(call["args"])
-                if isinstance(result, list):
-                    state["answer"] = "\n".join(
-                        item.get("text", str(item)) for item in result if isinstance(item, dict)
-                    )
-                else:
-                    state["answer"] = str(result)
-            else:
-                state["answer"] = response.content
-            return state
+    tools = [get_order_risk, get_high_risk_count]
+    llm_with_tools = llm.bind_tools(tools)
+    tool_map = {t.name: t for t in tools}
 
-        graph = StateGraph(AgentState)
-        graph.add_node("router", router_node)
-        graph.add_node("rag", rag_node)
-        graph.add_node("data", data_node)
-        graph.set_entry_point("router")
-        graph.add_conditional_edges("router", lambda s: s["route"], {"document": "rag", "data": "data"})
-        graph.add_edge("rag", END)
-        graph.add_edge("data", END)
-        return graph.compile()
+    def data_node(state: AgentState) -> AgentState:
+        response = llm_with_tools.invoke(state["question"])
+        if response.tool_calls:
+            call = response.tool_calls[0]
+            state["answer"] = tool_map[call["name"]].invoke(call["args"])
+        else:
+            state["answer"] = response.content
+        return state
 
-    return asyncio.run(setup())
+    graph = StateGraph(AgentState)
+    graph.add_node("router", router_node)
+    graph.add_node("rag", rag_node)
+    graph.add_node("data", data_node)
+    graph.set_entry_point("router")
+    graph.add_conditional_edges("router", lambda s: s["route"], {"document": "rag", "data": "data"})
+    graph.add_edge("rag", END)
+    graph.add_edge("data", END)
+    return graph.compile()
 
 
 agent_app = build_agent()
@@ -164,7 +168,7 @@ if user_question:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            result = asyncio.run(agent_app.ainvoke({"question": user_question, "route": "", "answer": ""}))
+            result = agent_app.invoke({"question": user_question, "route": "", "answer": ""})
             st.write(result["answer"])
 
     st.session_state.chat_messages.append({"role": "assistant", "content": result["answer"]})

@@ -2,3 +2,15 @@ streamlit
 pandas
 matplotlib
 seaborn
+langchain
+langchain-groq
+langchain-community
+langchain-huggingface
+langchain-text-splitters
+langgraph
+langchain-mcp-adapters
+mcp
+faiss-cpu
+sentence-transformers
+docx2txt
+python-dotenv

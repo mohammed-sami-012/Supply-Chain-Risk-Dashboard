@@ -106,9 +106,11 @@ Answer with just one word."""
         state["answer"] = llm.invoke(prompt).content
         return state
 
+    import sys
+
     async def setup():
         client = MultiServerMCPClient({
-            "supply_chain": {"command": "python", "args": ["mcp_server.py"], "transport": "stdio"}
+            "supply_chain": {"command": sys.executable, "args": ["mcp_server.py"], "transport": "stdio"}
         })
         tools = await client.get_tools()
         llm_with_tools = llm.bind_tools(tools)
